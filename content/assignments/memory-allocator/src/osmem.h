@@ -11,6 +11,7 @@
 #define ALIGNMENT 8
 #define ALIGN(size) (((size) + (ALIGNMENT-1)) & ~(ALIGNMENT-1))
 #define BLOCK_META_SIZE ALIGN(sizeof(struct block_meta))
+#define MMAP_THRESHOLD (128 * 1024)
 
 void *os_malloc(size_t size);
 void os_free(void *ptr);
