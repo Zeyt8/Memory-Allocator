@@ -48,12 +48,17 @@ void *os_malloc(size_t size)
 	{
 		if (blk_size < MMAP_THRESHOLD)
 		{
-			blk_size = MMAP_THRESHOLD;
+			heap_start = (struct block_meta *)sbrk(MMAP_THRESHOLD);
+			DIE(heap_start == MAP_FAILED, "sbrk failed");
+			heap_start->status = STATUS_ALLOC;
 		}
-		heap_start = (struct block_meta *)mmap(NULL, blk_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-		DIE(heap_start == MAP_FAILED, "mmap failed");
+		else
+		{
+			heap_start = (struct block_meta *)mmap(NULL, blk_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+			DIE(heap_start == MAP_FAILED, "mmap failed");
+			heap_start->status = STATUS_MAPPED;
+		}
 		heap_start->size = blk_size;
-		heap_start->status = STATUS_MAPPED;
 		return (void *)((char *)heap_start + sizeof(struct block_meta));
 	}
 
@@ -75,16 +80,15 @@ void *os_malloc(size_t size)
 		{
 			header = (struct block_meta *)sbrk(blk_size);
 			DIE(header == MAP_FAILED, "sbrk failed");
-			header->size = blk_size;
 			header->status = STATUS_ALLOC;
 		}
 		else
 		{
-			header = (struct block_meta *)mmap(NULL, blk_size, PROT_READ | PROT_WRITE, MAP_PRIVATE, -1, 0);
+			header = (struct block_meta *)mmap(NULL, blk_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
 			DIE(header == MAP_FAILED, "mmap failed");
-			header->size = blk_size;
 			header->status = STATUS_MAPPED;
 		}
+		header->size = blk_size;
 	}
 
 	return (void *)((char *)header + sizeof(struct block_meta));
@@ -98,9 +102,11 @@ void os_free(void *ptr)
 	}
 
 	struct block_meta *header = (struct block_meta *)((char *)ptr - BLOCK_META_SIZE);
-	if (header->status == STATUS_MAPPED)
+	int prev_status = header->status;
+	header->status = STATUS_FREE;
+
+	if (prev_status == STATUS_MAPPED)
 	{
-		header->status = STATUS_FREE;
 		int result = munmap(header, header->size);
 		DIE(result == -1, "munmap failed");
 	}
