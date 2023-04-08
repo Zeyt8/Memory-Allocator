@@ -6,7 +6,7 @@ import difflib
 from subprocess import Popen, PIPE
 
 
-verbose = False
+VERBOSE = False
 TRACED_CALLS = ["os_malloc", "os_calloc", "os_realloc", "os_free", "brk", "mmap", "munmap"]
 TESTS = {
     "test-malloc-no-preallocate": 2,
@@ -63,8 +63,8 @@ class Call:
     }
 
     def __init__(self, line: str) -> None:
-        for s, r in Call.replacePairs.items():
-            line = line.replace(s, r)
+        for string, replacement in Call.replacePairs.items():
+            line = line.replace(string, replacement)
 
         self.name = line.split("(")[0]
         self.args = line[line.find("(")+1:line.find(")")].replace(" ", "").split(",")
@@ -104,9 +104,9 @@ class SysCall(Call):
 
 
 class LibCall(Call):
-    def __init__(self, line: str, syscalls: list = []) -> None:
+    def __init__(self, line: str, syscalls: list = None) -> None:
         Call.__init__(self, line)
-        self.syscalls = syscalls.copy()
+        self.syscalls = syscalls.copy() if syscalls else []
 
     def __repr__(self) -> str:
         ret = super().__repr__()
@@ -115,180 +115,206 @@ class LibCall(Call):
         return ret
 
 
-def prettyMmapArgs(mmapSyscall: SysCall):
-    mmapSyscall.args[2] = " | ".join(list(map(lambda x: x[0], filter(lambda prot: int(mmapSyscall.args[2]) & prot[1], SysCall.MMAP_PROTS.items()))))
-    mmapSyscall.args[3] = " | ".join(list(map(lambda x: x[0], filter(lambda flag: int(mmapSyscall.args[3]) & flag[1], SysCall.MMAP_FLAGS.items()))))
+def pretty_mmap_args(mmap_syscall: SysCall):
+    mmap_syscall.args[2] = " | ".join(list(map(
+        lambda x: x[0], filter(lambda prot: int(mmap_syscall.args[2]) & prot[1],
+        SysCall.MMAP_PROTS.items())
+    )))
+    mmap_syscall.args[3] = " | ".join(list(map(
+        lambda x: x[0], filter(lambda flag: int(mmap_syscall.args[3]) & flag[1],
+        SysCall.MMAP_FLAGS.items())
+    )))
 
 
-def parseLtraceOutput(ltraceOutput: str):
+def parse_ltrace_output(ltrace_output: str):
     # Filter lines that do not contain traced calls
-    lines = list(filter(lambda line: any([line.find(tc) != -1 for tc in TRACED_CALLS]), ltraceOutput.splitlines()))
-    tracedCalls = []
-    unfinishedStack = []
-    syscallsBatch = []
-    dbgLine = [line[line.rfind('DBG:'):line.rfind(')')] for line in ltraceOutput.splitlines() if 'DBG' in line]
+    lines = list(filter(
+        lambda line: any(line.find(tc) != -1 for tc in TRACED_CALLS),
+        ltrace_output.splitlines()
+    ))
+    traced_calls = []
+    unfinished_stack = []
+    syscalls_batch = []
 
     # Get heap start
-    heapStart = int(SysCall(lines[0]).ret, 16)
+    heap_start = int(SysCall(lines[0]).ret, 16)
     # Get exit status
-    exitStatus = dbgLine + ltraceOutput.splitlines()[-1:]
+    exit_status = ltrace_output.splitlines()[-1:]
+    for line in ltrace_output.splitlines():
+        if 'DBG' in line:
+            exit_status = [line[line.rfind('DBG:'):line.rfind(')')]] + exit_status
 
     # Store addresses
-    heapAddresses = {}
-    mappedAddresses = {}
+    heap_addresses = {}
+    mapped_addresses = {}
 
     # Extract libcalls and nested syscalls from output
     for line in lines:
         # Syscalls
         if "SYS" in line:
             # Ignore syscalls made outside a library call
-            if unfinishedStack:
-                syscallsBatch.append(SysCall(line))
+            if unfinished_stack:
+                syscalls_batch.append(SysCall(line))
                 # Update mmap params
-                if syscallsBatch[-1].name == "mmap":
-                    prettyMmapArgs(syscallsBatch[-1])
+                if syscalls_batch[-1].name == "mmap":
+                    pretty_mmap_args(syscalls_batch[-1])
             continue
 
         # Libcalls
         if "<unfinished" in line:
-            unfinishedStack.append(line)
+            unfinished_stack.append(line)
         elif "resumed>" in line:
-            if not unfinishedStack:
+            if not unfinished_stack:
                 print("No call to resume")
-                exit(-1)
+                sys.exit(-1)
 
-            newLine = unfinishedStack.pop()
-            newLine = newLine[:newLine.find("<")] + line[line.find(">")+1:]
+            new_line = unfinished_stack.pop()
+            new_line = new_line[:new_line.find("<")] + line[line.find(">")+1:]
 
             # Only add top level calls
-            if not unfinishedStack:
-                tracedCalls.append(LibCall(newLine, syscallsBatch))
-                syscallsBatch.clear()
-        elif not unfinishedStack:
+            if not unfinished_stack:
+                traced_calls.append(LibCall(new_line, syscalls_batch))
+                syscalls_batch.clear()
+        elif not unfinished_stack:
             # Add top level libcalls
-            tracedCalls.append(LibCall(line))
+            traced_calls.append(LibCall(line))
 
     # Map addresses to relative values
-    for libcall in tracedCalls:
+    for libcall in traced_calls:
         # Syscalls
         for syscall in libcall.syscalls:
             # Mapped addresses
-            if syscall.name == "mmap" and syscall.ret not in mappedAddresses:
-                index = 1 + len(list(filter(lambda v: "+" not in v, [v for v in mappedAddresses.values()])))
-                mappedAddresses[syscall.ret] = f"<mapped-addr{index}>"
+            if syscall.name == "mmap" and syscall.ret not in mapped_addresses:
+                offset = 1 + len(list(filter(lambda v: "+" not in v, mapped_addresses.values())))
+                mapped_addresses[syscall.ret] = f"<mapped-addr{offset}>"
             # Heap addresses
-            elif syscall.name == "brk" and syscall.ret not in heapAddresses:
-                heapAddresses[syscall.ret] = "HeapStart + " + hex(int(syscall.ret, 16) - heapStart)
+            elif syscall.name == "brk" and syscall.ret not in heap_addresses:
+                heap_addresses[syscall.ret] = "HeapStart + " + \
+                    hex(int(syscall.ret, 16) - heap_start)
 
         # Return values
-        if libcall.ret != "<void>" and libcall.ret != "0":
+        if libcall.ret not in ["<void>", "0"]:
             # Mapped addresses
-            if any([s.name == "mmap" for s in libcall.syscalls]):
-                key = min([(key, abs(int(libcall.ret, 16) - int(key, 16))) for key in mappedAddresses.keys()], key=lambda x: x[1])[0]
-                mappedAddresses[libcall.ret] = mappedAddresses[key]
+            if any(s.name == "mmap" for s in libcall.syscalls):
+                key = min(
+                    ((key, abs(int(libcall.ret, 16) - int(key, 16))) for key in mapped_addresses),
+                    key=lambda x: x[1]
+                )[0]
+                mapped_addresses[libcall.ret] = mapped_addresses[key]
                 offset = int(libcall.ret, 16) - int(key, 16)
                 if offset:
-                    mappedAddresses[libcall.ret] += f" + {hex(offset)}"
+                    mapped_addresses[libcall.ret] += f" + {hex(offset)}"
             # Heap addresses
             else:
-                heapAddresses[libcall.ret] = "HeapStart + " + hex(int(libcall.ret, 16) - heapStart)
+                heap_addresses[libcall.ret] = "HeapStart + " + \
+                    hex(int(libcall.ret, 16) - heap_start)
 
-    return tracedCalls, heapAddresses, mappedAddresses, exitStatus
+    return traced_calls, heap_addresses, mapped_addresses, exit_status
 
 
-def writeTestOutput(testName, ltraceOutput):
+def write_test_output(test_name, ltrace_output):
     os.makedirs("out", exist_ok=True)
 
-    tracedCalls, heapAddresses, mappedAddresses, exitStatus = parseLtraceOutput(ltraceOutput)
+    traced_calls, heap_addresses, mapped_addresses, exit_status = parse_ltrace_output(ltrace_output)
 
     # Generate output
-    output = "\n".join([str(call) for call in tracedCalls])
-    for addr, offset in heapAddresses.items():
+    output = "\n".join([str(call) for call in traced_calls])
+    for addr, offset in heap_addresses.items():
         output = output.replace(addr, offset)
-    for addr, label in mappedAddresses.items():
+    for addr, label in mapped_addresses.items():
         output = output.replace(addr, label)
 
     # Justify name and args
-    output = "\n".join([line.split("=")[0].ljust(90) + line[line.find("="):] for line in output.splitlines()] + exitStatus) + "\n"
+    output = "\n".join(
+        [line.split("=")[0].ljust(90) + line[line.find("="):] for line in output.splitlines()] + \
+        exit_status
+    ) + "\n"
 
-    with (open(os.path.join("out", f"{testName}.out"), "w+")) as fout:
+    with (open(os.path.join("out", f"{test_name}.out"), "w+", encoding="ascii")) as fout:
         fout.write(output)
 
 
-def grade(testName: str):
-    outPath = os.path.join("out", f"{testName}.out")
-    refPath = os.path.join("ref", f"{testName}.ref")
+def grade(test_name: str):
+    out_path = os.path.join("out", f"{test_name}.out")
+    ref_path = os.path.join("ref", f"{test_name}.ref")
 
-    if not os.path.isfile(outPath):
-        print(f"Failed to open {outPath}", file=sys.stderr)
-        exit(-1)
+    if not os.path.isfile(out_path):
+        print(f"Failed to open {out_path}", file=sys.stderr)
+        sys.exit(-1)
 
-    if not os.path.isfile(refPath):
-        print(f"Failed to open {refPath}", file=sys.stderr)
-        exit(-1)
+    if not os.path.isfile(ref_path):
+        print(f"Failed to open {ref_path}", file=sys.stderr)
+        sys.exit(-1)
 
-    with open(outPath, "r") as fout, open(refPath, "r") as fref:
-        diffs = list(difflib.unified_diff(fout.readlines(), fref.readlines(), fromfile=outPath, tofile=refPath, lineterm=""))
+    with \
+        open(out_path, "r", encoding="ascii") as fout, \
+        open(ref_path, "r", encoding="ascii") as fref:
+        diffs = list(difflib.unified_diff(fout.readlines(), fref.readlines(), \
+            fromfile=out_path, tofile=ref_path, lineterm=""))
 
         if not diffs:
-            print(testName.ljust(33) + 24*"." + f" passed ...   {TESTS[testName]}", file=sys.stderr)
+            print(
+                test_name.ljust(33) + 24*"." + f" passed ...   {TESTS[test_name]}",
+                file=sys.stderr
+            )
             return 1
 
-        print(testName.ljust(33) + 24*"." + " failed ...   0", file=sys.stderr)
-        if verbose:
+        print(test_name.ljust(33) + 24*"." + " failed ...   0", file=sys.stderr)
+        if VERBOSE:
             print(*diffs[:3], sep="\n", file=sys.stderr)
             print(*diffs[3:], sep="", file=sys.stderr)
 
     return 0
 
 
-def runTest(testName):
-    bin = os.path.join("bin", testName)
-    if not os.path.isfile(bin):
-        print(f"Failed to open {bin}", file=sys.stderr)
-        exit(-1)
+def run_test(test_name):
+    executable = os.path.join("bin", test_name)
+    if not os.path.isfile(executable):
+        print(f"Failed to open {executable}", file=sys.stderr)
+        sys.exit(-1)
 
     env = os.environ.copy()
     src = os.environ.get("SRC_PATH", "../src")
     env["LD_LIBRARY_PATH"] = src
-    proc = Popen(["ltrace", "-F", ".ltrace.conf", "-S", "-x", "os_*", f"{bin}"], stdout=PIPE, stderr=PIPE, env=env)
-    _, stderr = proc.communicate()
+    with Popen(["ltrace", "-F", ".ltrace.conf", "-S", "-x", "os_*", f"{executable}"], \
+        stdout=PIPE, stderr=PIPE, env=env) as proc:
+        _, stderr = proc.communicate()
 
-    ltraceOutput = stderr.decode("ascii")
-    writeTestOutput(testName, ltraceOutput)
+        ltrace_output = stderr.decode("ascii")
+        write_test_output(test_name, ltrace_output)
 
 
-def parseArgs():
+def parse_args():
     global TESTS
-    global verbose
+    global VERBOSE
 
     if len(sys.argv) > 3:
         print(f"{sys.argv[0]} <test> <-v>", file=sys.stderr)
-        exit(-1)
+        sys.exit(-1)
     elif len(sys.argv) == 3:
         if sys.argv[1] == "-v":
-            verbose = True
+            VERBOSE = True
             TESTS = {sys.argv[2]: 0}
         elif sys.argv[2] == "-v":
-            verbose = True
+            VERBOSE = True
             TESTS = {sys.argv[1]: 0}
         else:
             print(f"{sys.argv[0]} <test> <-v>", file=sys.stderr)
-            exit(-1)
+            sys.exit(-1)
     elif len(sys.argv) == 2:
         if sys.argv[1] == "-v":
-            verbose = True
+            VERBOSE = True
         else:
             TESTS = {sys.argv[1]: 0}
 
 
 if __name__ == "__main__":
-    parseArgs()
+    parse_args()
 
-    total = 0
-    for testName in TESTS.keys():
-        runTest(testName)
-        if grade(testName):
-            total += TESTS[testName]
+    TOTAL = 0
+    for test, score in TESTS.items():
+        run_test(test)
+        if grade(test):
+            TOTAL += score
 
-    print(f"\nTotal:" + " " * 59 + f" {total}/100", file=sys.stderr)
+    print("\nTotal:" + " " * 59 + f" {TOTAL}/100", file=sys.stderr)
