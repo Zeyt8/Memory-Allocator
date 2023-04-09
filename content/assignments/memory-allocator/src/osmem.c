@@ -13,10 +13,6 @@ struct block_meta *find_fit(struct block_meta **last, size_t size)
 	struct block_meta *next = NULL;
 	while (header != NULL)
 	{
-		fprintf(log_file, "os_calloc()\n");
-		fflush(log_file);
-		fprintf(log_file, "os_calloc(%d)\n", header->status);
-		fflush(log_file);
 		if (header->status == STATUS_FREE)
 		{
 			if (header->size >= size)
@@ -152,11 +148,6 @@ void os_free(void *ptr)
 
 void *os_calloc(size_t nmemb, size_t size)
 {
-	if (!log_file)
-	{
-		log_file = fopen("log.txt", "w");
-		DIE(log_file == NULL, "fopen failed");
-	}
 	if (nmemb == 0 || size == 0)
 	{
 		return NULL;
