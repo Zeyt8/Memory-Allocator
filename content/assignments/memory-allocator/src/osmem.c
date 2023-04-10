@@ -3,10 +3,11 @@
 #include "osmem.h"
 #include "helpers.h"
 
-struct block_meta *heap_start;
+struct block_meta *heap_start = NULL;
+struct block_meta *prefix = NULL;
 char first_brk = 1;
 
-void coallesce_starting_with(struct block_meta *start, char has_max_size, size_t max_size_to_expand)
+void coalesce_starting_with(struct block_meta *start, char has_max_size, size_t max_size_to_expand)
 {
 	struct block_meta *header = start;
 	struct block_meta *next = NULL;
@@ -26,7 +27,7 @@ void coallesce_starting_with(struct block_meta *start, char has_max_size, size_t
 
 struct block_meta *find_fit(struct block_meta **last, size_t size)
 {
-	struct block_meta *header = heap_start;
+	struct block_meta *header = prefix;
 	struct block_meta *next = NULL;
 	size_t min_size = LONG_MAX;
 	struct block_meta *min_header = NULL;
@@ -76,11 +77,11 @@ void alloc(struct block_meta **header, struct block_meta *last, size_t blk_size,
 			first_brk = 0;
 		} else
 			(*header) = (struct block_meta *)sbrk(blk_size);
-		DIE(header == MAP_FAILED, "sbrk failed");
+		DIE(*header == MAP_FAILED, "sbrk failed");
 		(*header)->status = STATUS_ALLOC;
 	} else {
 		(*header) = (struct block_meta *)mmap(NULL, blk_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-		DIE(header == MAP_FAILED, "mmap failed");
+		DIE(*header == MAP_FAILED, "mmap failed");
 		(*header)->status = STATUS_MAPPED;
 	}
 	if (last)
@@ -96,6 +97,8 @@ void *malloc_helper(size_t size, size_t threshold)
 	// Alloc heap_start if it's the first time allocating
 	if (!heap_start) {
 		alloc(&heap_start, NULL, blk_size, threshold);
+		heap_start->next = prefix;
+		prefix = heap_start;
 		return (void *)((char *)heap_start + sizeof(struct block_meta));
 	}
 	struct block_meta *header;
@@ -144,14 +147,19 @@ void os_free(void *ptr)
 	if (ptr == NULL)
 		return;
 	struct block_meta *header = (struct block_meta *)((char *)ptr - BLOCK_META_SIZE);
-
 	int prev_status = header->status;
 
 	header->status = STATUS_FREE;
 	if (prev_status == STATUS_MAPPED) {
+		if (header == heap_start) {
+			prefix = heap_start->next;
+		}
 		int result = munmap(header, header->size);
 
 		DIE(result == -1, "munmap failed");
+		if (header == heap_start) {
+			heap_start = NULL;
+		}
 	}
 }
 
@@ -168,7 +176,7 @@ void *os_calloc(size_t nmemb, size_t size)
 
 	DIE(ptr == NULL, "os_malloc failed");
 
-	ptr = memset(ptr, 0, ALIGN(total_size));
+	memset(ptr, 0, total_size);
 
 	return ptr;
 }
@@ -204,11 +212,23 @@ void *os_realloc(void *ptr, size_t size)
 		header->size = new_size;
 		return ptr;
 	}
-	//coallesce_starting_with(header, 1, new_size);
-	void *new_ptr = os_malloc(size);
+	coalesce_starting_with(header, 1, new_size);
+	if (header->size >= new_size) {
+		if (header->status != STATUS_MAPPED || new_size >= MMAP_THRESHOLD) {
+			if (header->size - new_size >= ALIGN(1 + BLOCK_META_SIZE)) {
+				split(header, new_size);
+				header->size = new_size;
+			}
+			return ptr;
+		}
+	}
+	// If the block was not coalesced, allocate a new block and copy the data
+	void *new_ptr = os_malloc(new_size);
 
 	DIE(new_ptr == NULL, "os_malloc failed");
-	memcpy(new_ptr, ptr, new_size - BLOCK_META_SIZE);
+	size_t lowest = old_size < new_size ? old_size : new_size;
+	memcpy(new_ptr, ptr, lowest - BLOCK_META_SIZE);
+
 	os_free(ptr);
 	return new_ptr;
 }
