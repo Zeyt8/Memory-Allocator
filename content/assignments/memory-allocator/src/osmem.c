@@ -185,8 +185,10 @@ void *os_realloc(void *ptr, size_t size)
 {
 	if (ptr == NULL)
 		return os_malloc(size);
-	if (size == 0)
-		return os_free(ptr), NULL;
+	if (size == 0) {
+		os_free(ptr);
+		return NULL;
+	}
 	struct block_meta *header = (struct block_meta *)((char *)ptr - BLOCK_META_SIZE);
 	if (header->status == STATUS_FREE)
 		return NULL;
