@@ -3,8 +3,8 @@
 #include "osmem.h"
 #include "helpers.h"
 
-struct block_meta *heap_start = NULL;
-struct block_meta *prefix = NULL;
+struct block_meta *heap_start;
+struct block_meta *prefix;
 char first_brk = 1;
 
 void coalesce_starting_with(struct block_meta *start, char has_max_size, size_t max_size_to_expand)
@@ -151,15 +151,13 @@ void os_free(void *ptr)
 
 	header->status = STATUS_FREE;
 	if (prev_status == STATUS_MAPPED) {
-		if (header == heap_start) {
+		if (header == heap_start)
 			prefix = heap_start->next;
-		}
 		int result = munmap(header, header->size);
 
 		DIE(result == -1, "munmap failed");
-		if (header == heap_start) {
+		if (header == heap_start)
 			heap_start = NULL;
-		}
 	}
 }
 
@@ -190,6 +188,7 @@ void *os_realloc(void *ptr, size_t size)
 		return NULL;
 	}
 	struct block_meta *header = (struct block_meta *)((char *)ptr - BLOCK_META_SIZE);
+	
 	if (header->status == STATUS_FREE)
 		return NULL;
 	size_t old_size = header->size;
