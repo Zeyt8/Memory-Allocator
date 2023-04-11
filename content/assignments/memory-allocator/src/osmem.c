@@ -7,21 +7,20 @@ struct block_meta *heap_start;
 struct block_meta *prefix;
 char first_brk = 1;
 
-void coalesce_starting_with(struct block_meta *start, char has_max_size, size_t max_size_to_expand)
+void coalesce_next(struct block_meta *start, size_t max_size_to_expand)
 {
 	struct block_meta *header = start;
-	struct block_meta *next = NULL;
+	struct block_meta *next = header->next;
 
-	while (header != NULL) {
-		next = header->next;
-		if (next != NULL && next->status == STATUS_FREE) {
+	while (next != NULL) {
+		if (next->status == STATUS_FREE) {
 			header->size += next->size + BLOCK_META_SIZE;
 			header->next = next->next;
-			if (has_max_size && header->size >= max_size_to_expand)
-				break;
-			continue;
-		}
-		header = header->next;
+			next = header->next;
+			if (header->size >= max_size_to_expand)
+				return;
+		} else
+			return;
 	}
 }
 
@@ -62,7 +61,7 @@ void split(struct block_meta *header, size_t size)
 	size_t blk_size = ALIGN(size + BLOCK_META_SIZE);
 	struct block_meta *new_header = (struct block_meta *)((char *)header + blk_size);
 
-	new_header->size = header->size - ALIGN(size) - BLOCK_META_SIZE;
+	new_header->size = header->size - size - BLOCK_META_SIZE;
 	new_header->status = STATUS_FREE;
 	new_header->next = header->next;
 	header->next = new_header;
@@ -100,37 +99,37 @@ void *malloc_helper(size_t size, size_t threshold)
 		alloc(&heap_start, NULL, size, threshold);
 		heap_start->next = prefix;
 		prefix = heap_start;
-		return (void *)((char *)heap_start + sizeof(struct block_meta));
+		return (void *)((char *)heap_start + BLOCK_META_SIZE);
 	}
 	struct block_meta *header;
-
+	size_t alligned_size = ALIGN(size);
 	struct block_meta *last = heap_start;
 
 	// Find a free block that fits the requested size
 	header = find_fit(&last, size);
 	if (header) {
 		// Split the block if the remaining size is large enough to fit a block_meta struct and 1 byte
-		size_t diff = header->size - ALIGN(size);
+		size_t diff = header->size - alligned_size;
 
 		if (diff >= ALIGN(1 + BLOCK_META_SIZE)) {
-			split(header, size);
-			header->size = ALIGN(size);
+			split(header, alligned_size);
+			header->size = alligned_size;
 		}
 		header->status = STATUS_ALLOC;
 	} else {
 		// If last block is free, extend it, otherwise allocate a new block
 		if (last->status == STATUS_FREE) {
-			size_t extra_size = ALIGN(size) - last->size;
+			size_t extra_size = alligned_size - last->size;
 
 			sbrk(extra_size);
 			header = last;
-			header->size = ALIGN(size);
+			header->size = alligned_size;
 			header->status = STATUS_ALLOC;
 		} else {
 			alloc(&header, last, size, threshold);
 		}
 	}
-	return (void *)((char *)header + sizeof(struct block_meta));
+	return (void *)((char *)header + BLOCK_META_SIZE);
 }
 
 void *os_malloc(size_t size)
@@ -177,6 +176,17 @@ void *os_calloc(size_t nmemb, size_t size)
 	return ptr;
 }
 
+char changes_alloc_type(struct block_meta *header, size_t size)
+{
+	size_t blk_size = ALIGN(size + BLOCK_META_SIZE);
+
+	if (header->status == STATUS_MAPPED && blk_size < MMAP_THRESHOLD)
+		return 1;
+	if (header->status == STATUS_ALLOC && blk_size >= MMAP_THRESHOLD)
+		return 1;
+	return 0;
+}
+
 void *os_realloc(void *ptr, size_t size)
 {
 	if (ptr == NULL)
@@ -191,35 +201,37 @@ void *os_realloc(void *ptr, size_t size)
 		return NULL;
 	size_t old_size = header->size;
 	size_t blk_size = ALIGN(size + BLOCK_META_SIZE);
+	size_t alligned_size = ALIGN(size);
 
 	// If the new size is smaller than the old size, we might be able to split the block
-	if (old_size >= ALIGN(size)) {
-		// Check if the block was not allocated with mmap
-		// If it was, check if it needs to be reallocated with sbrk
-		if (header->status == STATUS_ALLOC && blk_size < MMAP_THRESHOLD) {
-			if (old_size - ALIGN(size) >= ALIGN(1 + BLOCK_META_SIZE)) {
-				split(header, size);
-				header->size = ALIGN(size);
+	if (old_size >= alligned_size) {
+		// Check if the block doesn't need to change allocation type
+		if (changes_alloc_type(header, size) == 0) {
+			if (old_size - alligned_size >= ALIGN(1 + BLOCK_META_SIZE)) {
+				split(header, alligned_size);
+				header->size = alligned_size;
 			}
 			return ptr;
 		}
-	} else if (old_size == ALIGN(size)) {
-		return ptr;
+		if (old_size == alligned_size)
+			return ptr;
 	} else {
 		// Check if block is last block to do expanding
-		if (header->next == NULL && header->status == STATUS_ALLOC && blk_size < MMAP_THRESHOLD) {
-			size_t extra_size = ALIGN(size) - old_size;
+		if (header->next == NULL && header->status != STATUS_ALLOC && blk_size < MMAP_THRESHOLD) {
+			size_t extra_size = alligned_size - old_size;
 
 			sbrk(extra_size);
-			header->size = ALIGN(size);
+			header->size = alligned_size;
 			return ptr;
 		}
-		coalesce_starting_with(header, 1, size);
-		if (header->size >= ALIGN(size)) {
-			if (header->status == STATUS_MAPPED && blk_size >= MMAP_THRESHOLD) {
-				if (header->size - ALIGN(size) >= ALIGN(1 + BLOCK_META_SIZE)) {
-					split(header, size);
-					header->size = ALIGN(size);
+		// Try to coalesce the block with the next ones
+		coalesce_next(header, alligned_size);
+		if (header->size >= alligned_size) {
+			// Check if the block doesn't need to change allocation type
+			if (changes_alloc_type(header, size) == 0) {
+				if (header->size - alligned_size >= ALIGN(1 + BLOCK_META_SIZE)) {
+					split(header, alligned_size);
+					header->size = alligned_size;
 				}
 				return ptr;
 			}
@@ -230,7 +242,7 @@ void *os_realloc(void *ptr, size_t size)
 	void *new_ptr = os_malloc(size);
 
 	DIE(new_ptr == NULL, "os_malloc failed");
-	size_t lowest = old_size < ALIGN(size) ? old_size : ALIGN(size);
+	size_t lowest = old_size < alligned_size ? old_size : alligned_size;
 	memcpy(new_ptr, ptr, lowest);
 
 	os_free(ptr);
