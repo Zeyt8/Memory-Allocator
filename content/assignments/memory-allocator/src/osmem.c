@@ -43,7 +43,7 @@ struct block_meta *find_fit(struct block_meta **last, size_t size)
 				continue;
 			}
 			// Found large enough block
-			if (header->size >= size) {
+			if (header->size >= ALIGN(size)) {
 				// Update the minimum size and header
 				if (header->size < min_size) {
 					min_size = header->size;
@@ -110,7 +110,7 @@ void *malloc_helper(size_t size, size_t threshold)
 	header = find_fit(&last, size);
 	if (header) {
 		// Split the block if the remaining size is large enough to fit a block_meta struct and 1 byte
-		size_t diff = header->size - size;
+		size_t diff = header->size - ALIGN(size);
 
 		if (diff >= ALIGN(1 + BLOCK_META_SIZE)) {
 			split(header, size);
@@ -193,33 +193,33 @@ void *os_realloc(void *ptr, size_t size)
 	size_t blk_size = ALIGN(size + BLOCK_META_SIZE);
 
 	// If the new size is smaller than the old size, we might be able to split the block
-	if (old_size >= size) {
+	if (old_size >= ALIGN(size)) {
 		// Check if the block was not allocated with mmap
 		// If it was, check if it needs to be reallocated with sbrk
 		if (header->status == STATUS_ALLOC && blk_size < MMAP_THRESHOLD) {
-			if (old_size - size >= ALIGN(1 + BLOCK_META_SIZE)) {
+			if (old_size - ALIGN(size) >= ALIGN(1 + BLOCK_META_SIZE)) {
 				split(header, size);
-				header->size = size;
+				header->size = ALIGN(size);
 			}
 			return ptr;
 		}
-	} else if (old_size == size) {
+	} else if (old_size == ALIGN(size)) {
 		return ptr;
 	} else {
 		// Check if block is last block to do expanding
 		if (header->next == NULL && header->status == STATUS_ALLOC && blk_size < MMAP_THRESHOLD) {
-			size_t extra_size = size - old_size;
+			size_t extra_size = ALIGN(size) - old_size;
 
 			sbrk(extra_size);
-			header->size = size;
+			header->size = ALIGN(size);
 			return ptr;
 		}
 		coalesce_starting_with(header, 1, size);
-		if (header->size >= size) {
+		if (header->size >= ALIGN(size)) {
 			if (header->status == STATUS_MAPPED && blk_size >= MMAP_THRESHOLD) {
-				if (header->size - size >= ALIGN(1 + BLOCK_META_SIZE)) {
+				if (header->size - ALIGN(size) >= ALIGN(1 + BLOCK_META_SIZE)) {
 					split(header, size);
-					header->size = size;
+					header->size = ALIGN(size);
 				}
 				return ptr;
 			}
