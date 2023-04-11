@@ -23,23 +23,27 @@ void coalesce_next(struct block_meta *start, size_t max_size_to_expand)
 	}
 }
 
-struct block_meta *find_fit(struct block_meta **last, size_t size)
+void coallesce_all()
 {
 	struct block_meta *header = heap_start;
-	struct block_meta *next = NULL;
+
+	while (header != NULL) {
+		if (header->status == STATUS_FREE)
+			coalesce_next(header, LONG_MAX);
+		header = header->next;
+	}
+}
+
+struct block_meta *find_fit(struct block_meta **last, size_t size)
+{
+	coallesce_all();
+	struct block_meta *header = heap_start;
 	size_t min_size = LONG_MAX;
 	struct block_meta *min_header = NULL;
 
 	// Find the first free block that fits the requested size
 	while (header != NULL) {
 		if (header->status == STATUS_FREE) {
-			next = header->next;
-			// Merge with the next block if it is free
-			if (next != NULL && next->status == STATUS_FREE) {
-				header->size += next->size + BLOCK_META_SIZE;
-				header->next = next->next;
-				continue;
-			}
 			// Found large enough block
 			if (header->size >= ALIGN(size)) {
 				// Update the minimum size and header
@@ -144,8 +148,9 @@ void os_free(void *ptr)
 	int prev_status = header->status;
 
 	header->status = STATUS_FREE;
+	coallesce_all();
 	if (prev_status == STATUS_MAPPED) {
-		int result = munmap(ptr, header->size);
+		int result = munmap(header, header->size + BLOCK_META_SIZE);
 
 		DIE(result == -1, "munmap failed");
 	}
