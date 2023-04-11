@@ -6,6 +6,7 @@
 struct block_meta *heap_start;
 char first_brk = 1;
 
+// Coalesce all blocks that are free after the given block
 void coalesce_next(struct block_meta *start, size_t max_size_to_expand)
 {
 	struct block_meta *header = start;
@@ -23,6 +24,7 @@ void coalesce_next(struct block_meta *start, size_t max_size_to_expand)
 	}
 }
 
+// Coalesce all blocks that are free
 void coallesce_all()
 {
 	struct block_meta *header = heap_start;
@@ -34,6 +36,7 @@ void coallesce_all()
 	}
 }
 
+// Find the first free block that fits the requested size
 struct block_meta *find_fit(struct block_meta **last, size_t size)
 {
 	coallesce_all();
@@ -59,6 +62,7 @@ struct block_meta *find_fit(struct block_meta **last, size_t size)
 	return min_header;
 }
 
+// Split the block into two blocks, one with the requested size and one with the remaining size
 void split(struct block_meta *header, size_t size)
 {
 	size_t blk_size = ALIGN(size + BLOCK_META_SIZE);
@@ -70,6 +74,7 @@ void split(struct block_meta *header, size_t size)
 	header->next = new_header;
 }
 
+// Allocate a new block
 void alloc(struct block_meta **header, struct block_meta *last, size_t size, size_t threshold)
 {
 	size_t blk_size = ALIGN(size + BLOCK_META_SIZE);
@@ -95,6 +100,8 @@ void alloc(struct block_meta **header, struct block_meta *last, size_t size, siz
 	(*header)->next = NULL;
 }
 
+// Same as a malloc, but with a threshold parameter for using mmap
+// This is used because calloc uses a different threshold
 void *malloc_helper(size_t size, size_t threshold)
 {
 	// Alloc heap_start if it's the first time allocating
@@ -174,6 +181,7 @@ void *os_calloc(size_t nmemb, size_t size)
 	return ptr;
 }
 
+// Check if the block needs to be changed from sbrk to mmap or vice versa
 char changes_alloc_type(struct block_meta *header, size_t size)
 {
 	size_t blk_size = ALIGN(size + BLOCK_META_SIZE);
