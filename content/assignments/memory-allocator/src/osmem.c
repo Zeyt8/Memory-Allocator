@@ -4,7 +4,9 @@
 #include "helpers.h"
 
 struct block_meta *heap_start;
+struct block_meta *prefix;
 char first_brk = 1;
+FILE* log_file;
 
 // Coalesce all blocks that are free after the given block
 void coalesce_next(struct block_meta *start, size_t max_size_to_expand)
@@ -25,9 +27,9 @@ void coalesce_next(struct block_meta *start, size_t max_size_to_expand)
 }
 
 // Coalesce all blocks that are free
-void coallesce_all()
+void coalesce_all_free()
 {
-	struct block_meta *header = heap_start;
+	struct block_meta *header = prefix;
 
 	while (header != NULL) {
 		if (header->status == STATUS_FREE)
@@ -39,14 +41,22 @@ void coallesce_all()
 // Find the first free block that fits the requested size
 struct block_meta *find_fit(struct block_meta **last, size_t size)
 {
-	coallesce_all();
-	struct block_meta *header = heap_start;
+	coalesce_all_free();
+	struct block_meta *header = prefix;
+	struct block_meta *next = NULL;
 	size_t min_size = LONG_MAX;
 	struct block_meta *min_header = NULL;
 
 	// Find the first free block that fits the requested size
 	while (header != NULL) {
 		if (header->status == STATUS_FREE) {
+			next = header->next;
+			// Merge with the next block if it is free
+			if (next != NULL && next->status == STATUS_FREE) {
+				header->size += next->size + BLOCK_META_SIZE;
+				header->next = next->next;
+				continue;
+			}
 			// Found large enough block
 			if (header->size >= ALIGN(size)) {
 				// Update the minimum size and header
@@ -107,8 +117,12 @@ void *malloc_helper(size_t size, size_t threshold)
 	// Alloc heap_start if it's the first time allocating
 	if (!heap_start) {
 		alloc(&heap_start, NULL, size, threshold);
+		if (prefix)
+			heap_start->next = prefix;
+		prefix = heap_start;
 		return (void *)((char *)heap_start + BLOCK_META_SIZE);
 	}
+
 	struct block_meta *header;
 	size_t alligned_size = ALIGN(size);
 	struct block_meta *last = heap_start;
@@ -155,11 +169,15 @@ void os_free(void *ptr)
 	int prev_status = header->status;
 
 	header->status = STATUS_FREE;
-	coallesce_all();
+	coalesce_all_free();
 	if (prev_status == STATUS_MAPPED) {
+		if (header == heap_start)
+			prefix = heap_start->next;
 		int result = munmap(header, header->size + BLOCK_META_SIZE);
 
 		DIE(result == -1, "munmap failed");
+		if (header == heap_start)
+			heap_start = NULL;
 	}
 }
 
