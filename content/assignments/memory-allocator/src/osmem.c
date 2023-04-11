@@ -6,7 +6,6 @@
 struct block_meta *heap_start;
 struct block_meta *prefix;
 char first_brk = 1;
-FILE* log_file;
 
 // Coalesce all blocks that are free after the given block
 void coalesce_next(struct block_meta *start, size_t max_size_to_expand)
@@ -27,7 +26,7 @@ void coalesce_next(struct block_meta *start, size_t max_size_to_expand)
 }
 
 // Coalesce all blocks that are free
-void coalesce_all_free()
+void coalesce_all_free(void)
 {
 	struct block_meta *header = prefix;
 
@@ -195,7 +194,6 @@ void *os_calloc(size_t nmemb, size_t size)
 	DIE(ptr == NULL, "os_malloc failed");
 
 	memset(ptr, 0, total_size);
-
 	return ptr;
 }
 
@@ -220,7 +218,6 @@ void *os_realloc(void *ptr, size_t size)
 		return NULL;
 	}
 	struct block_meta *header = (struct block_meta *)((char *)ptr - BLOCK_META_SIZE);
-	
 	if (header->status == STATUS_FREE)
 		return NULL;
 	size_t old_size = header->size;
@@ -261,14 +258,13 @@ void *os_realloc(void *ptr, size_t size)
 			}
 		}
 	}
-	
 	// If the block was not coalesced or expanded, allocate a new block and copy the data
 	void *new_ptr = os_malloc(size);
 
 	DIE(new_ptr == NULL, "os_malloc failed");
 	size_t lowest = old_size < alligned_size ? old_size : alligned_size;
-	memcpy(new_ptr, ptr, lowest);
 
+	memcpy(new_ptr, ptr, lowest);
 	os_free(ptr);
 	return new_ptr;
 }
