@@ -4,7 +4,6 @@
 #include "helpers.h"
 
 struct block_meta *heap_start;
-struct block_meta *prefix;
 char first_brk = 1;
 
 void coalesce_next(struct block_meta *start, size_t max_size_to_expand)
@@ -26,7 +25,7 @@ void coalesce_next(struct block_meta *start, size_t max_size_to_expand)
 
 struct block_meta *find_fit(struct block_meta **last, size_t size)
 {
-	struct block_meta *header = prefix;
+	struct block_meta *header = heap_start;
 	struct block_meta *next = NULL;
 	size_t min_size = LONG_MAX;
 	struct block_meta *min_header = NULL;
@@ -97,8 +96,6 @@ void *malloc_helper(size_t size, size_t threshold)
 	// Alloc heap_start if it's the first time allocating
 	if (!heap_start) {
 		alloc(&heap_start, NULL, size, threshold);
-		heap_start->next = prefix;
-		prefix = heap_start;
 		return (void *)((char *)heap_start + BLOCK_META_SIZE);
 	}
 	struct block_meta *header;
@@ -148,13 +145,9 @@ void os_free(void *ptr)
 
 	header->status = STATUS_FREE;
 	if (prev_status == STATUS_MAPPED) {
-		if (header == heap_start)
-			prefix = heap_start->next;
-		int result = munmap(header, header->size + BLOCK_META_SIZE);
+		int result = munmap(ptr, header->size);
 
 		DIE(result == -1, "munmap failed");
-		if (header == heap_start)
-			heap_start = NULL;
 	}
 }
 
