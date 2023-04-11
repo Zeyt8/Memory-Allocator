@@ -38,7 +38,7 @@ struct block_meta *find_fit(struct block_meta **last, size_t size)
 			next = header->next;
 			// Merge with the next block if it is free
 			if (next != NULL && next->status == STATUS_FREE) {
-				header->size += next->size;
+				header->size += next->size + BLOCK_META_SIZE;
 				header->next = next->next;
 				continue;
 			}
@@ -57,18 +57,21 @@ struct block_meta *find_fit(struct block_meta **last, size_t size)
 	return min_header;
 }
 
-void split(struct block_meta *header, size_t blk_size)
+void split(struct block_meta *header, size_t size)
 {
+	size_t blk_size = ALIGN(size + BLOCK_META_SIZE);
 	struct block_meta *new_header = (struct block_meta *)((char *)header + blk_size);
 
-	new_header->size = header->size - blk_size;
+	new_header->size = header->size - ALIGN(size) - BLOCK_META_SIZE;
 	new_header->status = STATUS_FREE;
 	new_header->next = header->next;
 	header->next = new_header;
 }
 
-void alloc(struct block_meta **header, struct block_meta *last, size_t blk_size, size_t threshold)
+void alloc(struct block_meta **header, struct block_meta *last, size_t size, size_t threshold)
 {
+	size_t blk_size = ALIGN(size + BLOCK_META_SIZE);
+
 	// Alloc with sbrk if the size is smaller than the threshold, otherwise use mmap
 	if (blk_size < threshold) {
 		// If it's the first time allocating with sbrk, allocate MMAP_THRESHOLD size
@@ -86,50 +89,45 @@ void alloc(struct block_meta **header, struct block_meta *last, size_t blk_size,
 	}
 	if (last)
 		last->next = *header;
-	(*header)->size = blk_size;
+	(*header)->size = ALIGN(size);
 	(*header)->next = NULL;
 }
 
 void *malloc_helper(size_t size, size_t threshold)
 {
-	size_t blk_size = ALIGN(size + BLOCK_META_SIZE);
-
 	// Alloc heap_start if it's the first time allocating
 	if (!heap_start) {
-		alloc(&heap_start, NULL, blk_size, threshold);
+		alloc(&heap_start, NULL, size, threshold);
 		heap_start->next = prefix;
 		prefix = heap_start;
 		return (void *)((char *)heap_start + sizeof(struct block_meta));
 	}
 	struct block_meta *header;
 
-	// blk_size must be at least BLOCK_META_SIZE to fit the block_meta struct
-	blk_size = blk_size < BLOCK_META_SIZE ? BLOCK_META_SIZE : blk_size;
-
 	struct block_meta *last = heap_start;
 
 	// Find a free block that fits the requested size
-	header = find_fit(&last, blk_size);
+	header = find_fit(&last, size);
 	if (header) {
 		// Split the block if the remaining size is large enough to fit a block_meta struct and 1 byte
-		size_t diff = header->size - blk_size;
+		size_t diff = header->size - size;
 
 		if (diff >= ALIGN(1 + BLOCK_META_SIZE)) {
-			split(header, blk_size);
-			header->size = blk_size;
+			split(header, size);
+			header->size = ALIGN(size);
 		}
 		header->status = STATUS_ALLOC;
 	} else {
 		// If last block is free, extend it, otherwise allocate a new block
 		if (last->status == STATUS_FREE) {
-			size_t extra_size = blk_size - last->size;
+			size_t extra_size = ALIGN(size) - last->size;
 
 			sbrk(extra_size);
 			header = last;
-			header->size = blk_size;
+			header->size = ALIGN(size);
 			header->status = STATUS_ALLOC;
 		} else {
-			alloc(&header, last, blk_size, threshold);
+			alloc(&header, last, size, threshold);
 		}
 	}
 	return (void *)((char *)header + sizeof(struct block_meta));
@@ -153,7 +151,7 @@ void os_free(void *ptr)
 	if (prev_status == STATUS_MAPPED) {
 		if (header == heap_start)
 			prefix = heap_start->next;
-		int result = munmap(header, header->size);
+		int result = munmap(header, header->size + BLOCK_META_SIZE);
 
 		DIE(result == -1, "munmap failed");
 		if (header == heap_start)
@@ -192,43 +190,44 @@ void *os_realloc(void *ptr, size_t size)
 	if (header->status == STATUS_FREE)
 		return NULL;
 	size_t old_size = header->size;
-	size_t new_size = ALIGN(size + BLOCK_META_SIZE);
+	size_t blk_size = ALIGN(size + BLOCK_META_SIZE);
 
 	// If the new size is smaller than the old size, we might be able to split the block
-	if (old_size >= new_size) {
+	if (old_size >= size) {
 		// Check if the block was allocated with mmap and if the new size should be allocated with sbrk
-		if (header->status != STATUS_MAPPED || new_size >= MMAP_THRESHOLD) {
-			if (old_size - new_size >= ALIGN(1 + BLOCK_META_SIZE)) {
-				split(header, new_size);
-				header->size = new_size;
+		if (header->status != STATUS_MAPPED || blk_size >= MMAP_THRESHOLD) {
+			if (old_size - size >= ALIGN(1 + BLOCK_META_SIZE)) {
+				split(header, size);
+				header->size = size;
 			}
 			return ptr;
 		}
 	}
 	// Check if block is last block to do expanding
-	if (header->next == NULL && header->status == STATUS_ALLOC && new_size < MMAP_THRESHOLD) {
-		size_t extra_size = new_size - old_size;
+	if (header->next == NULL && header->status == STATUS_ALLOC && blk_size < MMAP_THRESHOLD) {
+		size_t extra_size = size - old_size;
 
 		sbrk(extra_size);
-		header->size = new_size;
+		header->size = size;
 		return ptr;
 	}
-	coalesce_starting_with(header, 1, new_size);
-	if (header->size >= new_size) {
-		if (header->status != STATUS_MAPPED || new_size >= MMAP_THRESHOLD) {
-			if (header->size - new_size >= ALIGN(1 + BLOCK_META_SIZE)) {
-				split(header, new_size);
-				header->size = new_size;
+	
+	coalesce_starting_with(header, 1, size);
+	if (header->size >= size) {
+		if (header->status != STATUS_MAPPED || blk_size >= MMAP_THRESHOLD) {
+			if (header->size - size >= ALIGN(1 + BLOCK_META_SIZE)) {
+				split(header, size);
+				header->size = size;
 			}
 			return ptr;
 		}
 	}
 	// If the block was not coalesced, allocate a new block and copy the data
-	void *new_ptr = os_malloc(new_size);
+	void *new_ptr = os_malloc(size);
 
 	DIE(new_ptr == NULL, "os_malloc failed");
-	size_t lowest = old_size < new_size ? old_size : new_size;
-	memcpy(new_ptr, ptr, lowest - BLOCK_META_SIZE);
+	size_t lowest = old_size < size ? old_size : size;
+	memcpy(new_ptr, ptr, lowest);
 
 	os_free(ptr);
 	return new_ptr;
