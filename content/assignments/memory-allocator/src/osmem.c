@@ -218,6 +218,7 @@ void *os_realloc(void *ptr, size_t size)
 		return NULL;
 	}
 	struct block_meta *header = (struct block_meta *)((char *)ptr - BLOCK_META_SIZE);
+
 	if (header->status == STATUS_FREE)
 		return NULL;
 	size_t old_size = header->size;
