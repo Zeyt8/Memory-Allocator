@@ -238,7 +238,7 @@ void *os_realloc(void *ptr, size_t size)
 			return ptr;
 	} else {
 		// Check if block is last block to do expanding
-		if (header->next == NULL && header->status != STATUS_ALLOC && blk_size < MMAP_THRESHOLD) {
+		if (header->next == NULL && header->status == STATUS_ALLOC && blk_size < MMAP_THRESHOLD) {
 			size_t extra_size = alligned_size - old_size;
 
 			sbrk(extra_size);
